@@ -8,8 +8,8 @@ this is a project where I create self-similarity at (hopefully) all levels of a 
 - specialize a model for use with [conversational swarm intelligence](https://youtu.be/XBheCYnwdpM)
 
 Relevant inspiration papers:
-[Matryoshka Representation Learning](https://arxiv.org/abs/2205.13147)
-[MatFormer](https://arxiv.org/pdf/2310.07707.pdf)
-[2D Matryoshka Sentence Embeddings](https://arxiv.org/pdf/2402.14776.pdf)
-[A Language and Its Dimensions: Intrinsic Dimensions of Language Fractal Structures](https://arxiv.org/pdf/2311.10217.pdf)
-[Fractal Patterns May Unravel the Intelligence in Next-Token Prediction](https://arxiv.org/pdf/2402.01825.pdf)
+- [Matryoshka Representation Learning](https://arxiv.org/abs/2205.13147)
+- [MatFormer](https://arxiv.org/pdf/2310.07707.pdf)
+- [2D Matryoshka Sentence Embeddings](https://arxiv.org/pdf/2402.14776.pdf)
+- [A Language and Its Dimensions: Intrinsic Dimensions of Language Fractal Structures](https://arxiv.org/pdf/2311.10217.pdf)
+- [Fractal Patterns May Unravel the Intelligence in Next-Token Prediction](https://arxiv.org/pdf/2402.01825.pdf)
