@@ -6,6 +6,7 @@ this is a project where I create self-similarity at (hopefully) all levels of a 
 - infinite fusion of transformer models of a given size into transformer models of a larger size. if this works it'd allow for highly personalized models
 - take advantage of the fact that language has a fractal-structure[^1](https://arxiv.org/pdf/2402.01825.pdf)[^2](https://arxiv.org/pdf/2311.10217.pdf) to create an (infinitely?) extendable maximum context length. more on this later
 - specialize a model for use with [conversational swarm intelligence](https://youtu.be/XBheCYnwdpM)
+- i think if i properly mess with context lengths and combine tokens like in [Multi-Word Tokenization for Sequence Compression](https://arxiv.org/abs/2402.09949) along with combining residual states then i might be able to create a way to have very long context windows taking advantage of langauge's fractal structure
 
 Relevant inspiration papers:
 - [Matryoshka Representation Learning](https://arxiv.org/abs/2205.13147)
