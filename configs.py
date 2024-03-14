@@ -66,6 +66,7 @@ class BaseConfig:
     'OutputLayer': False,
     'FractalLoss': False,
     'FractalFormer': False,
+    'Model': False,
     'Sampler': False,
     'Generate': False
     }

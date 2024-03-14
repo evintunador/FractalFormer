@@ -53,9 +53,12 @@ class RMSNorm(torch.nn.Module):
         self,
         dim: int,
         eps: float = 1e-6,
+        verbose: bool = False,
         #add_unit_offset: bool = True,
     ):
         super().__init__() 
+        self.verbose = verbose
+        
         self.eps = eps  # Small epsilon value for numerical stability since you can't divide by 0
         #self.add_unit_offset = add_unit_offset  # Flag to determine if a unit should be added to the weight
         
@@ -89,19 +92,30 @@ class RMSNorm(torch.nn.Module):
         Returns:
         - output: The normalized and scaled tensor.
         """
+        if self.verbose: 
+            print("------------- RMSNorm.forward() ------------")
+            print(f"x: {x.shape}\n{x}")
             
         # Normalize the input tensor using the _norm function and ensure the data type matches the input.
         x = self._norm(x.float()).type_as(x)
+        if self.verbose: print(f"normed x: {x.shape}\n{x}")
         
         # grabbing x's dimension to use for splicing
         dim = x.shape[-1]
         
         # calculating skip for our splice
         skip = model * dim
+        if self.verbose: 
+            print(f"dim: {dim}")
+            print(f"skip: {skip}")
         
         # scale the normalized tensor by (1 + self.weight), which effectively starts with no scaling
         spliced_scale = self.weight[skip:skip + dim]
         output = x * (1 + spliced_scale)
+        if self.verbose:
+            print(f"spliced scale: {spliced_scale.shape}\n{spliced_scale}")
+            print(f"scaled normed x: {output.shape}\n{output}")
+            print("------------- END RMSNorm.forward() ------------")
                           
         return output
 
@@ -117,6 +131,7 @@ class MLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         dropout: float = 0.1,
+        verbose: bool = False,
     ):
         """
         Initializes the GemmaMLP module.
@@ -129,6 +144,8 @@ class MLP(nn.Module):
             dropout (float): the dropout rate to use during training in forwardTuple()
         """
         super().__init__()
+        self.verbose = verbose
+        
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         assert intermediate_size % hidden_size == 0
@@ -178,34 +195,63 @@ class MLP(nn.Module):
         Returns:
             Tensor: The output tensor after applying the GeGLU gating mechanism and the MLP transformations.
         """
+        if self.verbose: 
+            print("------------- MLP.forwardTensor() ------------")
+            print(f"x: {x.shape}\n{x}")
             
         # figuring out how we should do our splicing
         d_dim = x.shape[-1]
         d_skip = model * d_dim
         i_dim = d_dim * self.intermediate_multiplier
         i_skip = model * i_dim
+        if self.verbose: 
+            print(f"d_dim: {d_dim}")
+            print(f"d_skip: {d_skip}")
+            print(f"i_dim: {i_dim}")
+            print(f"i_skip: {i_skip}")
         
         # Applies linear transformation for gating.
         Wgate = self.Wgate[d_skip:d_skip + d_dim, i_skip:i_skip + i_dim]
         Bgate = self.Bgate[i_skip:i_skip + i_dim]
         Xgate = x @ Wgate + Bgate
+        if self.verbose: 
+            print(f"Wgate: {self.Wgate.shape}\n{self.Wgate}")
+            print(f"Wgate spliced: {Wgate.shape}\n{Wgate}")
+            print(f"Bgate: {self.Bgate.shape}\n{self.Bgate}")
+            print(f"Bgate spliced: {Bgate.shape}\n{Bgate}")
+            print(f"Xgate: {Xgate.shape}\n{Xgate}")
 
         # Applies GeLU activation to the gate, introducing non-linearity and enabling the gating mechanism.
         Xgate = F.gelu(Xgate)
+        if self.verbose: print(f"GeLU'ed Xgate: {Xgate.shape}\n{Xgate}")
 
         # Applies another linear transformation to the input tensor for subsequent combination with the gate.
         Wup = self.Wup[d_skip:d_skip + d_dim, i_skip:i_skip + i_dim]
         Bup = self.Bup[i_skip:i_skip + i_dim]
         Xup = x @ Wup + Bup
+        if self.verbose: 
+            print(f"Wup: {self.Wup.shape}\n{self.Wup}")
+            print(f"Wup spliced: {Wup.shape}\n{Wup}")
+            print(f"Bup: {self.Bup.shape}\n{self.Bup}")
+            print(f"Bup spliced: {Bup.shape}\n{Bup}")
+            print(f"Xup: {Xup.shape}\n{Xup}")
 
         # Element-wise multiplication of the gated tensor with the transformed input tensor, modulating
         # the input based on the gate's activation.
         Xfuse = Xgate * Xup
+        if self.verbose: print(f"Xfuse: {Xfuse.shape}\n{Xfuse}")
 
         # Applies the final linear transformation to project the modulated tensor back to the hidden size.
         Wdown = self.Wdown[i_skip:i_skip + i_dim, d_skip:d_skip + d_dim]
         Bdown = self.Bdown[d_skip:d_skip + d_dim]
         outputs = Xfuse @ Wdown + Bdown
+        if self.verbose: 
+            print(f"Wdown: {self.Wdown.shape}\n{self.Wdown}")
+            print(f"Wdown spliced: {Wdown.shape}\n{Wdown}")
+            print(f"Bdown: {self.Bdown.shape}\n{self.Bdown}")
+            print(f"Bdown spliced: {Bdown.shape}\n{Bdown}")
+            print(f"outputs: {outputs.shape}\n{outputs}") 
+            print("------------- END MLP.forwardTensor() ------------")
 
         # Returns the final output tensor of the MLP, after gating and modulation.
         return outputs
@@ -224,27 +270,42 @@ class MLP(nn.Module):
             Tuple[Tuple[Tensor]]: 
                 The output tuple of tuples of tensors after applying the GeGLU gating mechanism and the MLP transformations.
         """
+        if self.verbose: 
+            print("------------- MLP.forwardTuple() ------------")
+            print(f"x: {x}")
 
         # if we had sent through the config we could've just grabbed these values from there but too late now
         num_levels = len(x)
         models_per_level = [len(x[i]) for i in range(num_levels)]
+        if self.verbose: 
+            print(f"num_levels: {num_levels}")
+            print(f"models_per_level: {models_per_level}")
         
         out = ()
         for i in range(num_levels):
+            if self.verbose: print(f"i: {i}")
             
             out_lvl = ()
             for j in range(models_per_level[i]):
+                if self.verbose: print(f"j: {j}")
 
                 output = self.forwardTensor(x[i][j], model=j)
+                if self.verbose: print(f"forwardTensor() output: {output.shape}\n{output}")
                     
                 out_lvl += (self.drop(output),) if drop_bool else (output,)
 
             # pretty sure i have to save & store everything without overwriting to prevent in-place arguments. so annoying
+            if self.verbose: print(f"out_lvl: {out_lvl}")
             out += (out_lvl,)
+        
+        if self.verbose:
+            print(f"out: {out}")
+            print("------------- END MLP.forwardTuple() ------------")
         return out
         
     def forward(self, x, model=0, drop_bool = True):
         train = True if type(x) == tuple else False
+        if self.verbose: print(f"---------- MLP Input: {'Tuple' if train else 'torch.Tensor'} ------------")
         return self.forwardTuple(x, drop_bool) if train else self.forwardTensor(x, model)
 
 class MultiQueryAttention(nn.Module):
@@ -255,6 +316,7 @@ class MultiQueryAttention(nn.Module):
     
     def __init__(self, config: Config):
         super().__init__()
+        self.verbose = config.verbose['MQA']
 
         self.num_heads = config.num_attention_heads
         self.num_kv_heads = config.num_key_value_heads
@@ -313,12 +375,12 @@ class MultiQueryAttention(nn.Module):
         Returns:
             Tensor: The output tensor after applying the attention mechanism
         """
-        global verbose
-        if verbose: print("----------------- MultiQueryAttention.forwardTensor() --------------------")
+        if self.verbose: print("----------------- MultiQueryAttention.forwardTensor() --------------------")
         
         # Ensures the input tensor is 3-dimensional (batch_size, input_len, hidden_size).
         x_shape = x.shape
         assert len(x_shape) == 3
+        if self.verbose: print(f"x shape: {x_shape}")
 
         # Extracts input sequence length and embedding dimension length from the hidden states tensor.
         batch_size, input_len, d_dim = x_shape
@@ -326,17 +388,27 @@ class MultiQueryAttention(nn.Module):
         # figuring out how we should do our splicing
         # first along the embedding dimension
         d_skip = model * d_dim  # the size of our skip along the model's embedding dimension
+        if self.verbose: print(f"d_skip: {d_skip}")
         
         # then for splicing along the head sizes dimension
         index = config.model_dim_list.index(d_dim)
         models_in_this_level = config.model_count[index] # how many models are in this level
         h_dim = config.head_dim_list[index] # the head dimension size of this model in this level
         h_skip = model * h_dim # the size of our skip along the head dimension
+        if self.verbose: 
+            print(f"models_in_this_level: {models_in_this_level}")
+            print(f"h_dim: {h_dim}")
+            print(f"h_skip: {h_skip}")
 
         # Splits the Wqkv tensor into separate tensors for queries, keys, and values based on their respective sizes.
+        if self.verbose: print(f"self.Wqkv: {self.Wqkv.shape}\n{self.Wqkv}")
         Wq, Wk, Wv = self.Wqkv.split([self.q_size,
                                       self.kv_size,
                                       self.kv_size],dim=-1)
+        if self.verbose: 
+            print(f"Wq: {Wq.shape}\n{Wq}")
+            print(f"Wk: {Wk.shape}\n{Wk}")
+            print(f"Wv: {Wv.shape}\n{Wv}")
         
         # splicing to get our correct weight matrices for each respective head
         # d_dim is relatively self-explanatory
@@ -351,65 +423,104 @@ class MultiQueryAttention(nn.Module):
         Wv = torch.cat([Wv[d_skip:d_skip + d_dim,\
                                i*self.head_dim + h_skip:i*self.head_dim + h_skip + h_dim] \
                                for i in range(self.num_kv_heads)], dim=1)
+        if self.verbose:
+            print(f"Wq spliced: {Wq.shape}\n{Wq}")
+            print(f"Wk spliced: {Wk.shape}\n{Wk}")
+            print(f"Wv spliced: {Wv.shape}\n{Wv}")
         
         # this needs to be size (d_dim, (self.num_heads + 2 * self.num_kv_heads) * h_dim) aka (32,24)
         # recombine the spliced Wq Wk and Wv. Now they're the right size for matmul against x
         Wqkv_spliced = torch.cat((Wq, Wk, Wv), dim=-1)
+        if self.verbose:
+            print(f"Wqkv_spliced: {Wqkv_spliced.shape}\n{Wqkv_spliced}")
+        
 
         # finally we can project x to get our queries, keys and values
         xqkv = x @ Wqkv_spliced
+        if self.verbose: print(f"xqkv: {xqkv.shape}\n{xqkv}")
             
         # Splits the combined Xqkv tensor into separate tensors for queries (xq), keys (xk), and values (xv) based on their respective sizes.
         xq, xk, xv = xqkv.split([self.q_size // models_in_this_level,
                                  self.kv_size // models_in_this_level,
                                  self.kv_size // models_in_this_level],dim=-1)
+        if self.verbose:
+            print(f"xq: {xq.shape}\n{xq}")
+            print(f"xk: {xk.shape}\n{xk}")
+            print(f"xv: {xv.shape}\n{xv}")
 
         # Reshapes each of the Q, K, and V tensors to separate the heads and align the dimensions for attention operations.
         xq = xq.view(batch_size, input_len, self.num_heads, h_dim)#, self.head_dim)
         xk = xk.view(batch_size, input_len, self.num_kv_heads, h_dim)#, self.head_dim)
         xv = xv.view(batch_size, input_len, self.num_kv_heads, h_dim)#, self.head_dim)
+        if self.verbose:
+            print(f"xq reshaped: {xq.shape}\n{xq}")
+            print(f"xk reshaped: {xk.shape}\n{xk}")
+            print(f"xv reshaped: {xv.shape}\n{xv}")
 
         # Applies rotary positional embeddings to queries and keys to incorporate positional information.
-        xq = apply_rotary_emb(xq, h_dim, self.theta)
-        xk = apply_rotary_emb(xk, h_dim, self.theta)
+        xq = apply_rotary_emb(xq, h_dim, self.theta)#self.head_dim
+        xk = apply_rotary_emb(xk, h_dim, self.theta)#self.head_dim
+        # is the differring head dimension going to mess with RoPE? Not sure
+        if self.verbose:
+            print(f"rotated xq: {xq.shape}\n{xq}")
+            print(f"rotated xk: {xk.shape}\n{xk}")
 
         # If the number of KV heads is different from the number of query heads, adjusts keys and values to match the query heads count.
         if self.num_kv_heads != self.num_heads:
             # [batch_size, input_len, n_local_heads, head_dim]
             xk = torch.repeat_interleave(xk, self.num_queries_per_kv, dim=2)
             xv = torch.repeat_interleave(xv, self.num_queries_per_kv, dim=2)
+            if self.verbose:
+                print(f"repeat_interleaved xk: {xk.shape}\n{xk}")
+                print(f"repeat_interleaved xv: {xv.shape}\n{xv}")
 
         # Transposes Q, K, and V tensors to align them for the batch matrix multiplication in attention calculation.
         # [batch_size, n_local_heads, input_len, head_dim]
         q = xq.transpose(1, 2)
         k = xk.transpose(1, 2)
         v = xv.transpose(1, 2)
+        if self.verbose:
+            print(f"transposed xq: {q.shape}\n{q}")
+            print(f"transposed xk: {k.shape}\n{k}")
+            print(f"transposed xv: {v.shape}\n{v}")
 
         # Calculates attention scores by performing a batch matrix multiplication between queries and keys, followed by scaling.
         # [batch_size, n_local_heads, input_len, input_len]
-        scores = torch.matmul(q, k.transpose(2, 3)) * h_dim**-0.5
+        scores = torch.matmul(q, k.transpose(2, 3)) * h_dim**-0.5#self.scaling
+        if self.verbose: print(f"scores: {scores.shape}\n{scores}")
         
         # Applies the lower-triangular mask to the attention scores
+        if self.verbose: print(f"mask: {self.mask[...,:input_len, :input_len].shape}\n{self.mask[...,:input_len, :input_len]}")
         scores = scores + self.mask[...,:input_len, :input_len] # make sure mask is the correct size. input_len <= max_seq_len
+        if self.verbose: print(f"masked scores: {scores.shape}\n{scores}")
 
         # Applies softmax to the scores to obtain attention probabilities
         scores = F.softmax(scores, dim=-1)
+        if self.verbose: print(f"softmaxed scores: {scores.shape}\n{scores}")
         
         # Computes the weighted sum of values based on the attention scores to obtain the output of the attention mechanism.
         # [batch_size, n_local_heads, input_len, head_dim]
         attention = torch.matmul(scores, v)
+        if self.verbose: print(f"attention: {attention.shape}\n{attention}")
 
         # Reshapes the attention output to match the expected output dimensions, combining the heads back into the hidden dimension.
         # [batch_size, input_len, hidden_dim]
         attention = attention.transpose(1, 2).contiguous().view(batch_size, input_len, -1)
+        if self.verbose: print(f"reshaped attention: {attention.shape}\n{attention}")
 
         # Splice the output projection
         Wo = torch.cat([self.Wo[i*self.head_dim + h_skip:i*self.head_dim + h_skip + h_dim,\
                                 d_skip:d_skip + d_dim,\
                                ] for i in range(self.num_heads)], dim=0)
+        if self.verbose: 
+            print(f"self.Wo: {self.Wo.shape}\n{self.Wo}")
+            print(f"spliced Wo: {Wo.shape}\n{Wo}")
             
         # Applies the final linear projection to the attention output, mapping it back to the hidden size dimension.
         output = attention @ Wo
+        if self.verbose: 
+            print(f"projected output: {output.shape}\n{output}")
+            print("----------------- END MultiQueryAttention.forwardTensor() --------------------")
             
         return output
 
@@ -430,33 +541,48 @@ class MultiQueryAttention(nn.Module):
             Tuple[Tuple[Tensor]]: 
                 The output tuple of tuples of tensors after applying the MQA mechanism
         """
+        if self.verbose: 
+            print("------------- MultiQueryAttention.forwardTuple() ------------")
+            print(f"x: {x}")
             
         # forwardTuple() should only be used during training, so we assert input_len == max_position_embeddings
         input_len = x[0][0].shape[1]
+        if self.verbose: print(f"input_len: {input_len}")
         assert input_len == config.max_position_embeddings
 
         # we could define these from the config but this way the method is more flexible to testing
         num_levels = len(x)
         models_per_level = [len(x[i]) for i in range(num_levels)]
+        if self.verbose: 
+            print(f"num_levels: {num_levels}")
+            print(f"models_per_level: {models_per_level}")
 
         # the loop that iterates over levels, aka the different potential sizes of models
         out = ()
         for i in range(num_levels):
+            if self.verbose: print(f"Level {i} from range({num_levels})")
 
             # now for the loop that iterates over models in this level
             out_lvl = ()
             for j in range(models_per_level[i]):
+                if self.verbose: print(f"Model {j} from range({models_per_level[i]})")
 
                 output = self.forwardTensor(x[i][j], model=j)
+                if self.verbose: print(f"forwardTensor() output: {output.shape}\n{output}")
                 
                 out_lvl += (self.drop(output),) if drop_bool else (output,)
             
             out += (out_lvl,)
+        
+        if self.verbose:
+            print(f"final output: {out}")
+            print("------------- END MultiQueryAttention.forwardTuple() ------------")
 
         return out
         
     def forward(self, x, model=0, drop_bool = True):
         train = True if type(x) == tuple else False
+        if self.verbose: print(f"---------- Attention Input: {'Tuple' if train else 'torch.Tensor'} ------------")
         return self.forwardTuple(x, drop_bool) if train else self.forwardTensor(x, model)
 
 class Layer(nn.Module):
@@ -467,6 +593,7 @@ class Layer(nn.Module):
 
     def __init__(self, config: Config):
         super().__init__()
+        self.verbose = config.verbose['Layer']
 
         # Initializes the GemmaAttention mechanism with parameters from the config, enabling self-attention within the decoder layer.
         self.self_attn = MultiQueryAttention(config)
@@ -479,15 +606,18 @@ class Layer(nn.Module):
             intermediate_size = config.intermediate_size,
             # the % of neurons to set to 0 during training
             dropout = config.dropout,
+            verbose=config.verbose['MLP']
         )
         
         # Applies RMSNorm normalization to the input of the decoder layer for stable training dynamics.
         self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps = config.rms_norm_eps)
+                                       eps = config.rms_norm_eps,
+                                      verbose=config.verbose['RMSNorm'])
         
         # Applies RMSNorm after the attention mechanism and before the MLP to ensure the output is well-conditioned for further processing.
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                eps = config.rms_norm_eps)
+                                                eps = config.rms_norm_eps,
+                                              verbose=config.verbose['RMSNorm'])
 
     def forwardTensor(self,
                 # The input tensor to the decoder layer. shape (batch_size, input_len, hidden_size)
@@ -495,6 +625,9 @@ class Layer(nn.Module):
                 model: int = 0,
                 drop_bool: bool = False
                 ) -> torch.Tensor:
+        if self.verbose: 
+            print("----------------- Layer.forwardTensor() --------------------")
+            print(f"x in layer before MQA:\n{x}")
         
         # Self Attention Block
         # Stores the original input for use as a residual connection, aiding in mitigating the vanishing gradient problem
@@ -505,6 +638,7 @@ class Layer(nn.Module):
         x = self.self_attn(x, model, drop_bool)
         # The aforementioned residual connection
         x = residual_connection + x
+        if self.verbose: print(f"x in layer after MQA & resid connection and before MLP:\n{x}")
 
         # MLP Block
         # Again, stores the output of the attention block for use as a residual connection before processing by the MLP.
@@ -515,6 +649,9 @@ class Layer(nn.Module):
         x = self.mlp(x, model, drop_bool)
         # Another residual connection
         x = residual_connection + x
+        if self.verbose: 
+            print(f"layer's final residual state:\n{x}")
+            print("----------------- END Layer.forwardTensor() --------------------")
 
         return x
 
@@ -534,38 +671,55 @@ class Layer(nn.Module):
             Tuple[Tuple[Tensor]]: 
                 The output tuple of tuples of tensors after applying the decoder layer
         """
+        if self.verbose: 
+            print("------------- Layer.forwardTuple() ------------")
+            print(f"x:\n{x}")
             
         # forwardTuple() should only be used during training, so we assert input_len == max_position_embeddings
         input_len = x[0][0].shape[1]
+        if self.verbose: print(f"input_len: {input_len}")
         assert input_len == config.max_position_embeddings
 
         # we could define these from the config but this way the method is more flexible to testing
         num_levels = len(x)
         models_per_level = [len(x[i]) for i in range(num_levels)]
+        if self.verbose: 
+            print(f"num_levels: {num_levels}")
+            print(f"models_per_level: {models_per_level}")
 
         # the loop that iterates over levels, aka the different potential sizes of models
         out = ()
         for i in range(num_levels):
+            if self.verbose: print(f"Level {i} from range({num_levels})")
 
             # now for the loop that iterates over models in this level
             out_lvl = ()
             for j in range(models_per_level[i]):
+                if self.verbose: print(f"Model {j} from range({models_per_level[i]})")
 
                 output = self.forwardTensor(x[i][j], model = j, drop_bool = True)
+                if self.verbose: print(f"forwardTensor() output: {output.shape}\n{output}")
                 
                 out_lvl += (output,)
             
             out += (out_lvl,)
+        
+        if self.verbose:
+            print(f"final output: {out}")
+            print("------------- END Layer.forwardTuple() ------------")
 
         return out
         
     def forward(self, x, model=0):
         train = True if type(x) == tuple else False
+        if self.verbose: print(f"---------- Layer Input: {'Tuple' if train else 'torch.Tensor'} ------------")
         return self.forwardTuple(x) if train else self.forwardTensor(x, model)
 
 class OutputLayer(nn.Module):
     def __init__(self, embedding: torch.Tensor, config: Config):
         super().__init__()
+        self.verbose = config.verbose['OutputLayer']
+        
         self.embedding = embedding
         self.v = config.vocab_size
         self.model_dim_list = config.model_dim_list
@@ -579,22 +733,35 @@ class OutputLayer(nn.Module):
                                   eps = config.rms_norm_eps)
 
     def forwardTensor(self, x, model=0):
+        if self.verbose: 
+            print("------------- OutputLayer.forwardTensor() ------------")
+            print(f"x: {x.shape}\n{x}")
 
         # setting up our splicing logic
         d_i = x.shape[-1]
         skip = model * d_i
+        if self.verbose:
+            print(f"d_i: {d_i}")
+            print(f"skip: {skip}")
+            print(f"embedding: {self.embedding.shape}\n{self.embedding}")
 
         # splice out our embedding matrix according to what model we're using
         sliced_embed = self.embedding[:,skip:skip + d_i]
+        if self.verbose: print(f"sliced_embed: {sliced_embed.shape}\n{sliced_embed}")
 
         # normalize our sliced embedding matrix
         normed_sliced_embed = self.embedding_norm(sliced_embed)
+        if self.verbose: print(f"normed & sliced embedding: {normed_sliced_embed.shape}\n{normed_sliced_embed}")
 
         # normalize the residual state before the final linear layer
         x = self.final_norm(x, model)
+        if self.verbose: print(f"normed x: {x.shape}\n{x}")
 
         # calculating the final output logits of the model
         logits = x @ normed_sliced_embed.t()
+        if self.verbose: 
+            print(f"final logits: {logits.shape}\n{logits}")
+            print("------------- END OutputLayer.forwardTensor() ------------")
 
         return logits
 
@@ -612,39 +779,55 @@ class OutputLayer(nn.Module):
             output (Tuple[Tuple[Tensor]]): 
                 The output tuple of tuples of tensors after applying the final embedding classification
         """
+        if self.verbose: 
+            print("------------- OutputLayer.forwardTuple() ------------")
+            print(f"x:\n{x}")
             
         # forwardTuple() should only be used during training, so we assert input_len == max_position_embeddings
         assert type(x) == tuple
         input_len = x[0][0].shape[1]
+        if self.verbose: print(f"input_len: {input_len}")
         assert input_len == config.max_position_embeddings
 
         # we could define these from the config but this way the method is more flexible to testing
         num_levels = len(x)
         models_per_level = [len(x[i]) for i in range(num_levels)]
+        if self.verbose: 
+            print(f"num_levels: {num_levels}")
+            print(f"models_per_level: {models_per_level}")
 
         # the loop that iterates over levels, aka the different potential sizes of models
         out = ()
         for i in range(num_levels):
+            if self.verbose: print(f"Level {i} from range({num_levels})")
 
             # now for the loop that iterates over models in this level
             out_lvl = ()
             for j in range(models_per_level[i]):
+                if verbose: print(f"Model {j} from range({models_per_level[i]})")
 
                 output = self.forwardTensor(x[i][j], model = j)
+                if verbose: print(f"forwardTensor() output: {output.shape}\n{output}")
                 
                 out_lvl += (output,)
             
             out += (out_lvl,)
         
+        if self.verbose:
+            print(f"final output: {out}")
+            print("------------- END Layer.forwardTuple() ------------")
+        
         return out
         
     def forward(self, x, model=0):
         train = True if type(x) == tuple else False
+        if self.verbose: print(f"---------- Layer Input: {'Tuple' if train else 'torch.Tensor'} ------------")
         return self.forwardTuple(x) if train else self.forwardTensor(x, model)
 
 class FractalLoss(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
+        self.verbose = config.verbose['FractalLoss']
 
         self.criterion = nn.CrossEntropyLoss()
 
@@ -655,11 +838,15 @@ class FractalLoss(nn.Module):
             - target is a shape [batch_size, max_seq_len] tensor of the integer indices of the correct tokens
         output: a tensor containing a single float of the loss value
         """
+        if self.verbose: 
+            print("------------- FractalLoss.forward() ------------")
+            print(f"logits:\n{logits}")
             
         assert type(logits) == tuple # since this function should only be used during training
             
         # should only be used during training, so we assert input_len == max_position_embeddings
         b,t,v = logits[0][0].shape
+        if self.verbose: print(f"b:{b}, t:{t}, v:{v}, b*t:{b*t}")
         assert t == config.max_position_embeddings
         
         # Calculate losses for each output and stack them. 
@@ -673,11 +860,16 @@ class FractalLoss(nn.Module):
                             for i in range(len(logits))] # iterates across levels
                           ).sum() # sums across levels
 
+        if self.verbose:
+            print(f"final loss: {loss}")
+            print("------------- END FractalLoss.forward() ------------")
+
         return loss
 
 class FractalFormer_base(nn.Module):
     def __init__(self, config: Config, tokenizer: tokenizer):
         super().__init__()
+        self.verbose=config.verbose['Model']
         self.config = config
         self.tokenizer = tokenizer
 
@@ -725,16 +917,24 @@ class FractalFormer_base(nn.Module):
             - model: integer designating the model in that level to use. 0 is top-left, -1 is bottom right
         output: a torch.Tensor shape (batch_size, sequence_length, vocab_size)
         """
+        if self.verbose: 
+            print("------------- FractalFormer.forwardTensor() ------------")
+            print(f"input_token_ids: {input_token_ids.shape}\n{input_token_ids}")
         
         # adjusting everything to the specified level & model
         d_dim = self.hidden_size // (2**level)
         d_skip = model * d_dim
+        if self.verbose:
+            print(f"d_dim: {d_dim}")
+            print(f"d_skip: {d_skip}")
         
         # turn the input tokens into the first residual state using the embedding matrix
         # (batch_size, input_len) & (vocab_size, hidden_size) -> (batch_size, input_len, hidden_size) -> (batch_size, input_len, d_dim)
         x = self.embedder(input_token_ids)
+        if self.verbose: print(f"x0: {x.shape}\n{x}")
 
         x = x[:,:, d_skip:d_skip + d_dim]
+        if self.verbose: print(f"spliced x0: {x0.shape}\n{x0}")
         
         # Gemma normalizes the embedding by sqrt(hidden_size)
         # the question is, should I do this with the full sized hidden_size or do it at the splice size????
@@ -743,12 +943,18 @@ class FractalFormer_base(nn.Module):
         # alternatively i could just switch to doing a regular RMSNorm which would be more like me
         # if i figure out this different sizes of hyperspheres thing it'd be more in line with that
         x = self.embedder_norm(x, model)
+        if self.verbose: print(f"normalized initial x: {x.shape}\n{x}")
 
         # Iteratively process the input through each Layer
         for i, layer in enumerate(self.layers):
+            if self.verbose: print(f"begin layer {i}")
             x = layer(x, model)
+            if self.verbose: print(f"output of layer {i}: {x.shape}\n{x}")
 
         logits = self.output_layer(x, model)
+        if self.verbose: 
+            print(f"output logits: {logits.shape}\n{logits}")
+            print("------------- END FractalFormer.forwardTensor() ------------")
 
         return logits
 
@@ -756,33 +962,49 @@ class FractalFormer_base(nn.Module):
                      input_token_ids: torch.Tensor,
                      target_token_ids: torch.Tensor,
                     ) -> torch.Tensor:
+        if self.verbose: 
+            print("------------- FractalFormer.forwardTuple() ------------")
+            print(f"input_token_ids: {input_token_ids.shape}\n{input_token_ids}")
+            print(f"target_token_ids: {target_token_ids.shape}\n{target_token_ids}")
         
         # use the embedding matrix to turn the input tokens into the first residual state of the largest model
         # (batch_size, input_len) & (vocab_size, hidden_size) -> (batch_size, input_len, hidden_size)
         x0 = self.embedder(input_token_ids)
+        if self.verbose: print(f"initial x: {x.shape}\n{x}")
 
         # create the first fractal tuple of residual states
         x = ()
         for i, models_in_level in enumerate(config.model_count):
+            if self.verbose: print(f"i: {i}, models_in_level: {models_in_level}, iterating over {config.model_count}")
             
             x_lvl = ()
             for j, d_dim in enumerate(config.model_dim_list):
+                if self.verbose: print(f"j: {j}, d_dim: {d_dim}, iterating over {config.model_dim_list}")
 
                 skip = j * d_dim
+                if self.verbose: print(f"skip: {skip}")
                 
                 x_ij_spliced = x0[:,:,skip:skip + d_dim]
+                if self.verbose: print(f"initial x[{i}][{j}] spliced: {x_ij_spliced.shape}\n{x_ij_spliced}")
                     
                 x_ij_spliced_normed = self.embedder_norm(x_ij_spliced, model=j) # * (d_dim**0.5) # if i want to do Gemma normalization instead
+                if self.verbose: print(f"initial x[{i}][{j}] spliced & normed: {x_ij_spliced_normed.shape}\n{x_ij_spliced_normed}")
                 
                 x_lvl += (x_ij_spliced_normed,)  
             x += (x_lvl,)
+        if self.verbose: print(f"full tuple initial x: {x0}")
 
         # Iteratively process the input through each Layer
         for i, layer in enumerate(self.layers):
+            if self.verbose: print(f"begin layer {i}")
             
             x = layer(x)
+            if self.verbose: print(f"output of layer {i}: {x}")
 
         logits = self.output_layer(x)
+        if self.verbose: 
+            print(f"output logits: {logits}")
+            print("------------- END FractalFormer.forwardTuple() ------------")
 
         return logits
 
@@ -792,6 +1014,12 @@ class FractalFormer_base(nn.Module):
                 level: int = 0, # integer designating the level of model to use. 0 is largest model
                 model: int = 0, # integer designating the model in that level to use. 0 is top-left model in level
                 ):
+        if self.verbose: 
+            print("------------- FractalFormer.forward() ------------")
+            print(f"input_token_ids: {input_token_ids.shape}\n{input_token_ids}")
+            print(f"target_token_ids: {target_token_ids}")
+            print(f"level: {level}")
+            print(f"model: {model}")
         
         if target_token_ids is None: # if we're not training, then we don't need to calculate loss
             logits = self.forwardTensor(input_token_ids, level, model)
@@ -803,6 +1031,11 @@ class FractalFormer_base(nn.Module):
             
             # custom Fractal CELoss function
             loss = self.criterion(logits, target_token_ids) 
+        
+        if self.verbose: 
+            print(f"logits: {logits}")
+            print(f"loss: {loss}")
+            print("------------- END FractalFormer.forward() ------------")
         
         return logits, loss
 
